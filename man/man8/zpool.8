@@ -80,7 +80,7 @@
 .Nm
 .Cm import
 .Fl a
-.Op Fl DfmN
+.Op Fl DflmN
 .Op Fl F Op Fl n
 .Op Fl c Ar cachefile Ns | Ns Fl d Ar dir
 .Op Fl o Ar mntopts
@@ -997,7 +997,7 @@ Lists destroyed pools only.
 .Nm
 .Cm import
 .Fl a
-.Op Fl DfmN
+.Op Fl DflmN
 .Op Fl F Op Fl n
 .Op Fl c Ar cachefile Ns | Ns Fl d Ar dir
 .Op Fl o Ar mntopts
@@ -1042,6 +1042,14 @@ importable state by discarding the last few transactions. Not all damaged pools
 can be recovered by using this option. If successful, the data from the
 discarded transactions is irretrievably lost. This option is ignored if the pool
 is importable or already imported.
+.It Fl l
+Indicates that the zpool command will request encryption keys for all
+encrypted datasets it attempts to mount as it is bringing the pool
+online. This is equivalent to running \fBzfs mount\fR on each
+encrypted dataset immediately after the pool is imported. If any
+datasets have a \fBprompt\fR keysource this command will block waiting
+for the key to be entered. Otherwise, encrypted datasets will be left
+unavailable until the keys are loaded.
 .It Fl m
 Allows a pool to import when there is a missing log device. Recent transactions
 can be lost because the log device will be discarded.
@@ -1129,6 +1137,14 @@ importable state by discarding the last few transactions. Not all damaged pools
 can be recovered by using this option. If successful, the data from the
 discarded transactions is irretrievably lost. This option is ignored if the pool
 is importable or already imported.
+.It Fl l
+Indicates that the zpool command will request encryption keys for all
+encrypted datasets it attempts to mount as it is bringing the pool
+online. This is equivalent to running \fBzfs mount\fR on each
+encrypted dataset immediately after the pool is imported. If any
+datasets have a \fBprompt\fR keysource this command will block waiting
+for the key to be entered. Otherwise, encrypted datasets will be left
+unavailable until the keys are loaded.
 .It Fl m
 Allows a pool to import when there is a missing log device. Recent transactions
 can be lost because the log device will be discarded.

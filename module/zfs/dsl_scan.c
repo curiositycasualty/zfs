@@ -425,25 +425,6 @@ dsl_free_sync(zio_t *pio, dsl_pool_t *dp, uint64_t txg, const blkptr_t *bpp)
 	zio_nowait(zio_free_sync(pio, dp->dp_spa, txg, bpp, pio->io_flags));
 }
 
-int
-dsl_read(zio_t *pio, spa_t *spa, const blkptr_t *bpp, arc_buf_t *pbuf,
-    arc_done_func_t *done, void *private, int priority, int zio_flags,
-    uint32_t *arc_flags, const zbookmark_phys_t *zb)
-{
-    printf("dsl_read called?\n");
-	return (arc_read(pio, spa, bpp, done, private,
-	    priority, zio_flags, arc_flags, zb));
-}
-
-int
-dsl_read_nolock(zio_t *pio, spa_t *spa, const blkptr_t *bpp,
-    arc_done_func_t *done, void *private, int priority, int zio_flags,
-    uint32_t *arc_flags, const zbookmark_phys_t *zb)
-{
-	return (arc_read(pio, spa, bpp, done, private,
-	    priority, zio_flags, arc_flags, zb));
-}
-
 static uint64_t
 dsl_scan_ds_maxtxg(dsl_dataset_t *ds)
 {
@@ -612,7 +593,7 @@ dsl_scan_zil(dsl_pool_t *dp, zil_header_t *zh)
 	zilog = zil_alloc(dp->dp_meta_objset, zh);
 
 	(void) zil_parse(zilog, dsl_scan_zil_block, dsl_scan_zil_record, &zsa,
-	    claim_txg);
+	    claim_txg, B_TRUE);
 
 	zil_free(zilog);
 }
@@ -851,7 +832,7 @@ dsl_scan_visitbp(blkptr_t *bp, const zbookmark_phys_t *zb,
 		goto out;
 
 	/*
-	 * If dsl_scan_ddt() has aready visited this block, it will have
+	 * If dsl_scan_ddt() has already visited this block, it will have
 	 * already done any translations or scrubbing, so don't call the
 	 * callback again.
 	 */

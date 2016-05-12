@@ -45,6 +45,7 @@
 #include <sys/metaslab_impl.h>
 #include <sys/callb.h>
 #include <sys/time.h>
+#include <sys/dsl_crypt.h>
 
 /*
  * ==========================================================================
@@ -340,7 +341,7 @@ zio_pop_transforms(zio_t *zio)
 
 /*
  * ==========================================================================
- * I/O transform callbacks for subblocks and decompression
+ * I/O transform callbacks for subblocks, decompression, and decryption
  * ==========================================================================
  */
 static void
@@ -359,6 +360,38 @@ zio_decompress(zio_t *zio, void *data, uint64_t size)
 	    zio_decompress_data(BP_GET_COMPRESS(zio->io_bp),
 	    zio->io_data, data, zio->io_size, size) != 0)
 		zio->io_error = SET_ERROR(EIO);
+}
+
+static void
+zio_decrypt(zio_t *zio, void *data, uint64_t size)
+{
+	int ret;
+	blkptr_t *bp = zio->io_bp;
+	uint8_t salt[DATA_SALT_LEN];
+	uint8_t iv[DATA_IV_LEN];
+	uint8_t mac[DATA_MAC_LEN];
+
+	ASSERT(BP_IS_ENCRYPTED(bp));
+	ASSERT3U(size, !=, 0);
+
+	if (zio->io_error != 0)
+		return;
+
+	zio_crypt_decode_params_bp(bp, salt, iv);
+
+	if (BP_GET_TYPE(bp) == DMU_OT_INTENT_LOG) {
+		zio_crypt_decode_mac_zil(zio->io_data, mac);
+	} else {
+		zio_crypt_decode_mac_bp(bp, mac);
+	}
+
+	ret = spa_do_crypt_data(B_FALSE, zio->io_spa, &zio->io_bookmark, bp,
+	    bp->blk_birth, size, data, zio->io_data, iv, mac, salt);
+	if (ret == ZIO_NO_ENCRYPTION_NEEDED) {
+		ASSERT3U(BP_GET_TYPE(bp), ==, DMU_OT_INTENT_LOG);
+	} else if (ret) {
+		zio->io_error = ret;
+	}
 }
 
 /*
@@ -798,9 +831,12 @@ zio_write(zio_t *pio, spa_t *spa, uint64_t txg, blkptr_t *bp,
 	 * Data can be NULL if we are going to call zio_write_override() to
 	 * provide the already-allocated BP.  But we may need the data to
 	 * verify a dedup hit (if requested).  In this case, don't try to
-	 * dedup (just take the already-allocated BP verbatim).
+	 * dedup (just take the already-allocated BP verbatim). Encrypted
+	 * dedup blocks need data as well so we also disable dedup in this
+	 * case.
 	 */
-	if (data == NULL && zio->io_prop.zp_dedup_verify) {
+	if (data == NULL &&
+	    (zio->io_prop.zp_dedup_verify || zio->io_prop.zp_encrypt)) {
 		zio->io_prop.zp_dedup = zio->io_prop.zp_dedup_verify = B_FALSE;
 	}
 
@@ -1139,15 +1175,22 @@ static int
 zio_read_bp_init(zio_t *zio)
 {
 	blkptr_t *bp = zio->io_bp;
+	uint64_t psize =
+		    BP_IS_EMBEDDED(bp) ? BPE_GET_PSIZE(bp) : BP_GET_PSIZE(bp);
 
 	if (BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF &&
 	    zio->io_child_type == ZIO_CHILD_LOGICAL &&
-	    !(zio->io_flags & ZIO_FLAG_RAW)) {
-		uint64_t psize =
-		    BP_IS_EMBEDDED(bp) ? BPE_GET_PSIZE(bp) : BP_GET_PSIZE(bp);
+	    !(zio->io_flags & ZIO_FLAG_RAW_COMPRESS)) {
 		void *cbuf = zio_buf_alloc(psize);
 
 		zio_push_transform(zio, cbuf, psize, psize, zio_decompress);
+	}
+
+	if (BP_IS_ENCRYPTED(bp) && zio->io_child_type == ZIO_CHILD_LOGICAL &&
+		!(zio->io_flags & ZIO_FLAG_RAW_ENCRYPT)) {
+		void *cbuf = zio_buf_alloc(psize);
+
+		zio_push_transform(zio, cbuf, psize, psize, zio_decrypt);
 	}
 
 	if (BP_IS_EMBEDDED(bp) && BPE_GET_ETYPE(bp) == BP_EMBEDDED_TYPE_DATA) {
@@ -1172,6 +1215,65 @@ zio_read_bp_init(zio_t *zio)
 static int
 zio_write_bp_init(zio_t *zio)
 {
+	if (!IO_IS_ALLOCATING(zio))
+		return (ZIO_PIPELINE_CONTINUE);
+
+	ASSERT(zio->io_child_type != ZIO_CHILD_DDT);
+
+	if (zio->io_bp_override) {
+		blkptr_t *bp = zio->io_bp;
+		zio_prop_t *zp = &zio->io_prop;
+
+		ASSERT(bp->blk_birth != zio->io_txg);
+		ASSERT(BP_GET_DEDUP(zio->io_bp_override) == 0);
+
+		*bp = *zio->io_bp_override;
+		zio->io_pipeline = ZIO_INTERLOCK_PIPELINE;
+
+		if (BP_IS_EMBEDDED(bp))
+			return (ZIO_PIPELINE_CONTINUE);
+
+		/*
+		 * If we've been overridden and nopwrite is set then
+		 * set the flag accordingly to indicate that a nopwrite
+		 * has already occurred.
+		 */
+		if (!BP_IS_HOLE(bp) && zp->zp_nopwrite) {
+			ASSERT(!zp->zp_dedup);
+			ASSERT3U(BP_GET_CHECKSUM(bp), ==, zp->zp_checksum);
+			zio->io_flags |= ZIO_FLAG_NOPWRITE;
+			return (ZIO_PIPELINE_CONTINUE);
+		}
+		ASSERT(!zp->zp_nopwrite);
+
+		if (BP_IS_HOLE(bp) || !zp->zp_dedup)
+			return (ZIO_PIPELINE_CONTINUE);
+
+		ASSERT((zio_checksum_table[zp->zp_checksum].ci_flags &
+			ZCHECKSUM_FLAG_DEDUP) || zp->zp_dedup_verify);
+
+		if (BP_GET_CHECKSUM(bp) == zp->zp_checksum &&
+		    !zp->zp_encrypt) {
+			BP_SET_DEDUP(bp, 1);
+			zio->io_pipeline |= ZIO_STAGE_DDT_WRITE;
+			return (ZIO_PIPELINE_CONTINUE);
+		}
+
+		/*
+		 * We were unable to handle this as an override bp, treat
+		 * it as a regular write I/O.
+		 */
+		zio->io_bp_override = NULL;
+		*bp = zio->io_bp_orig;
+		zio->io_pipeline = zio->io_orig_pipeline;
+	}
+
+	return (ZIO_PIPELINE_CONTINUE);
+}
+
+static int
+zio_write_compress(zio_t *zio)
+{
 	spa_t *spa = zio->io_spa;
 	zio_prop_t *zp = &zio->io_prop;
 	enum zio_compress compress = zp->zp_compress;
@@ -1179,8 +1281,6 @@ zio_write_bp_init(zio_t *zio)
 	uint64_t lsize = zio->io_lsize;
 	uint64_t psize = zio->io_size;
 	int pass = 1;
-
-	EQUIV(lsize != psize, (zio->io_flags & ZIO_FLAG_RAW) != 0);
 
 	/*
 	 * If our children haven't all reached the ready stage,
@@ -1204,46 +1304,6 @@ zio_write_bp_init(zio_t *zio)
 	}
 
 	ASSERT(zio->io_child_type != ZIO_CHILD_DDT);
-
-	if (zio->io_bp_override) {
-		ASSERT(bp->blk_birth != zio->io_txg);
-		ASSERT(BP_GET_DEDUP(zio->io_bp_override) == 0);
-
-		*bp = *zio->io_bp_override;
-		zio->io_pipeline = ZIO_INTERLOCK_PIPELINE;
-
-		if (BP_IS_EMBEDDED(bp))
-			return (ZIO_PIPELINE_CONTINUE);
-
-		/*
-		 * If we've been overridden and nopwrite is set then
-		 * set the flag accordingly to indicate that a nopwrite
-		 * has already occurred.
-		 */
-		if (!BP_IS_HOLE(bp) && zp->zp_nopwrite) {
-			ASSERT(!zp->zp_dedup);
-			zio->io_flags |= ZIO_FLAG_NOPWRITE;
-			return (ZIO_PIPELINE_CONTINUE);
-		}
-
-		ASSERT(!zp->zp_nopwrite);
-
-		if (BP_IS_HOLE(bp) || !zp->zp_dedup)
-			return (ZIO_PIPELINE_CONTINUE);
-
-		ASSERT((zio_checksum_table[zp->zp_checksum].ci_flags &
-		    ZCHECKSUM_FLAG_DEDUP) || zp->zp_dedup_verify);
-
-		if (BP_GET_CHECKSUM(bp) == zp->zp_checksum) {
-			BP_SET_DEDUP(bp, 1);
-			zio->io_pipeline |= ZIO_STAGE_DDT_WRITE;
-			return (ZIO_PIPELINE_CONTINUE);
-		}
-		zio->io_bp_override = NULL;
-		BP_ZERO(bp);
-	}
-
-	ASSERT(zio->io_child_type != ZIO_CHILD_DDT);
 	ASSERT(zio->io_bp_override == NULL);
 
 	if (!BP_IS_HOLE(bp) && bp->blk_birth == zio->io_txg) {
@@ -1263,23 +1323,24 @@ zio_write_bp_init(zio_t *zio)
 		ASSERT(!BP_GET_DEDUP(bp));
 
 		if (pass >= zfs_sync_pass_dont_compress)
-			compress = ZIO_COMPRESS_OFF;
+		    compress = ZIO_COMPRESS_OFF;
 
 		/* Make sure someone doesn't change their mind on overwrites */
 		ASSERT(BP_IS_EMBEDDED(bp) || MIN(zp->zp_copies + BP_IS_GANG(bp),
-		    spa_max_replication(spa)) == BP_GET_NDVAS(bp));
+			    spa_max_replication(spa)) == BP_GET_NDVAS(bp));
 	}
-
 	/* If it's a compressed write that is not raw, compress the buffer. */
-	if (compress != ZIO_COMPRESS_OFF && psize == lsize) {
+	if (compress != ZIO_COMPRESS_OFF &&
+	    !(zio->io_flags & ZIO_FLAG_RAW_COMPRESS)) {
 		void *cbuf = zio_buf_alloc(lsize);
 		psize = zio_compress_data(compress, zio->io_data, cbuf, lsize);
 		if (psize == 0 || psize == lsize) {
 			compress = ZIO_COMPRESS_OFF;
 			zio_buf_free(cbuf, lsize);
-		} else if (!zp->zp_dedup && psize <= BPE_PAYLOAD_SIZE &&
-		    zp->zp_level == 0 && !DMU_OT_HAS_FILL(zp->zp_type) &&
-		    spa_feature_is_enabled(spa, SPA_FEATURE_EMBEDDED_DATA)) {
+		} else if (!zp->zp_dedup && !zp->zp_encrypt &&
+			psize <= BPE_PAYLOAD_SIZE &&
+			zp->zp_level == 0 && !DMU_OT_HAS_FILL(zp->zp_type) &&
+			spa_feature_is_enabled(spa, SPA_FEATURE_EMBEDDED_DATA)) {
 			encode_embedded_bp_compressed(bp,
 			    cbuf, compress, lsize, psize);
 			BPE_SET_ETYPE(bp, BP_EMBEDDED_TYPE_DATA);
@@ -1289,7 +1350,7 @@ zio_write_bp_init(zio_t *zio)
 			bp->blk_birth = zio->io_txg;
 			zio->io_pipeline = ZIO_INTERLOCK_PIPELINE;
 			ASSERT(spa_feature_is_active(spa,
-			    SPA_FEATURE_EMBEDDED_DATA));
+				    SPA_FEATURE_EMBEDDED_DATA));
 			return (ZIO_PIPELINE_CONTINUE);
 		} else {
 			/*
@@ -1325,6 +1386,9 @@ zio_write_bp_init(zio_t *zio)
 		zio->io_bp_override = NULL;
 		*bp = zio->io_bp_orig;
 		zio->io_pipeline = zio->io_orig_pipeline;
+
+	} else {
+		ASSERT3U(psize, !=, 0);
 	}
 
 	/*
@@ -1349,7 +1413,7 @@ zio_write_bp_init(zio_t *zio)
 
 	if (psize == 0) {
 		if (zio->io_bp_orig.blk_birth != 0 &&
-		    spa_feature_is_active(spa, SPA_FEATURE_HOLE_BIRTH)) {
+			spa_feature_is_active(spa, SPA_FEATURE_HOLE_BIRTH)) {
 			BP_SET_LSIZE(bp, lsize);
 			BP_SET_TYPE(bp, zp->zp_type);
 			BP_SET_LEVEL(bp, zp->zp_level);
@@ -1377,9 +1441,10 @@ zio_write_bp_init(zio_t *zio)
 			zio->io_pipeline |= ZIO_STAGE_NOP_WRITE;
 		}
 	}
-
 	return (ZIO_PIPELINE_CONTINUE);
 }
+
+
 
 static int
 zio_free_bp_init(zio_t *zio)
@@ -2157,13 +2222,42 @@ zio_write_gang_block(zio_t *pio)
 	uint64_t resid = pio->io_size;
 	uint64_t lsize;
 	int copies = gio->io_prop.zp_copies;
-	int gbh_copies = MIN(copies + 1, spa_max_replication(spa));
+	int gbh_copies;
 	zio_prop_t zp;
 	int g, error;
 
-	error = metaslab_alloc(spa, spa_normal_class(spa), SPA_GANGBLOCKSIZE,
-	    bp, gbh_copies, txg, pio == gio ? NULL : gio->io_bp,
-	    METASLAB_HINTBP_FAVOR | METASLAB_GANG_HEADER);
+	int flags = METASLAB_HINTBP_FAVOR | METASLAB_GANG_HEADER;
+
+	gbh_copies = MIN(copies + 1, spa_max_replication(spa));
+
+	/*
+	 * encrypted blocks need DVA[2] free so encrypted gang headers can't
+	 * have a third copy.
+	 */
+	if (gio->io_prop.zp_encrypt && gbh_copies >= SPA_DVAS_PER_BP)
+		gbh_copies = SPA_DVAS_PER_BP - 1;
+
+	if (pio->io_flags & ZIO_FLAG_IO_ALLOCATING) {
+		ASSERT(pio->io_priority == ZIO_PRIORITY_ASYNC_WRITE);
+		ASSERT(!(pio->io_flags & ZIO_FLAG_NODATA));
+
+		flags |= METASLAB_ASYNC_ALLOC;
+		VERIFY(refcount_held(&mc->mc_alloc_slots, pio));
+
+		/*
+		 * The logical zio has already placed a reservation for
+		 * 'copies' allocation slots but gang blocks may require
+		 * additional copies. These additional copies
+		 * (i.e. gbh_copies - copies) are guaranteed to succeed
+		 * since metaslab_class_throttle_reserve() always allows
+		 * additional reservations for gang blocks.
+		 */
+		VERIFY(metaslab_class_throttle_reserve(mc, gbh_copies - copies,
+		    pio, flags));
+	}
+
+	error = metaslab_alloc(spa, mc, SPA_GANGBLOCKSIZE,
+	    bp, gbh_copies, txg, pio == gio ? NULL : gio->io_bp, flags, pio);
 	if (error) {
 		if (pio->io_flags & ZIO_FLAG_IO_ALLOCATING) {
 			ASSERT(pio->io_priority == ZIO_PRIORITY_ASYNC_WRITE);
@@ -2210,15 +2304,19 @@ zio_write_gang_block(zio_t *pio)
 
 		zp.zp_checksum = gio->io_prop.zp_checksum;
 		zp.zp_compress = ZIO_COMPRESS_OFF;
+		zp.zp_encrypt = gio->io_prop.zp_encrypt;
 		zp.zp_type = DMU_OT_NONE;
 		zp.zp_level = 0;
 		zp.zp_copies = gio->io_prop.zp_copies;
 		zp.zp_dedup = B_FALSE;
 		zp.zp_dedup_verify = B_FALSE;
 		zp.zp_nopwrite = B_FALSE;
+		bzero(zp.zp_salt, DATA_SALT_LEN);
+		bzero(zp.zp_iv, DATA_IV_LEN);
+		bzero(zp.zp_mac, DATA_MAC_LEN);
 
 		zio_t *cio = zio_write(zio, spa, txg, &gbh->zg_blkptr[g],
-		    (char *)pio->io_data + (pio->io_size - resid), lsize, lszie,
+		    (char *)pio->io_data + (pio->io_size - resid), lsize, lsize,
 			&zp, zio_write_gang_member_ready, NULL, NULL, NULL,
 		    &gn->gn_child[g], pio->io_priority,
 		    ZIO_GANG_CHILD_FLAGS(pio), &pio->io_bookmark);
@@ -2294,6 +2392,7 @@ zio_nop_write(zio_t *zio)
 	if (BP_IS_HOLE(bp_orig) ||
 	    !(zio_checksum_table[BP_GET_CHECKSUM(bp)].ci_flags &
 	    ZCHECKSUM_FLAG_NOPWRITE) ||
+		BP_IS_ENCRYPTED(bp) || BP_IS_ENCRYPTED(bp_orig) ||
 	    BP_GET_CHECKSUM(bp) != BP_GET_CHECKSUM(bp_orig) ||
 	    BP_GET_COMPRESS(bp) != BP_GET_COMPRESS(bp_orig) ||
 	    BP_GET_DEDUP(bp) != BP_GET_DEDUP(bp_orig) ||
@@ -2915,8 +3014,8 @@ zio_dva_unallocate(zio_t *zio, zio_gang_node_t *gn, blkptr_t *bp)
  * Try to allocate an intent log block.  Return 0 on success, errno on failure.
  */
 int
-zio_alloc_zil(spa_t *spa, uint64_t txg, blkptr_t *new_bp, blkptr_t *old_bp,
-	uint64_t size, boolean_t use_slog)
+zio_alloc_zil(spa_t *spa, objset_t *os, uint64_t txg, blkptr_t *new_bp,
+    blkptr_t *old_bp, uint64_t size, boolean_t use_slog)
 {
 	int error = 1;
 
@@ -2943,6 +3042,23 @@ zio_alloc_zil(spa_t *spa, uint64_t txg, blkptr_t *new_bp, blkptr_t *old_bp,
 		BP_SET_LEVEL(new_bp, 0);
 		BP_SET_DEDUP(new_bp, 0);
 		BP_SET_BYTEORDER(new_bp, ZFS_HOST_BYTEORDER);
+
+		/*
+		 * encrypted blocks will require an IV and salt. We generate
+		 * these now since we will not be rewriting the bp at
+		 * rewrite time.
+		 */
+		if (os->os_encrypted) {
+			uint8_t iv[DATA_IV_LEN];
+			uint8_t salt[DATA_SALT_LEN];
+
+			BP_SET_ENCRYPTED(new_bp, B_TRUE);
+			VERIFY0(spa_crypt_get_salt(spa,
+			    dmu_objset_id(os), salt));
+			VERIFY0(zio_crypt_generate_iv(iv));
+
+			zio_crypt_encode_params_bp(new_bp, salt, iv);
+		}
 	}
 
 	return (error);
@@ -3277,6 +3393,107 @@ zio_vdev_io_bypass(zio_t *zio)
 
 /*
  * ==========================================================================
+ * Encrypt and store encryption parameters
+ * ==========================================================================
+ */
+
+
+/*
+ * This function is used for ZIO_STAGE_ENCRYPT. It is responsible for
+ * managing the storage of encryption parameters and passing them to the
+ * lower-level encryption functions.
+ */
+static int
+zio_encrypt(zio_t *zio)
+{
+	int ret;
+	zio_prop_t *zp = &zio->io_prop;
+	spa_t *spa = zio->io_spa;
+	blkptr_t *bp = zio->io_bp;
+	uint64_t psize = BP_GET_PSIZE(bp);
+	dmu_object_type_t ot = BP_GET_TYPE(bp);
+	void *enc_buf = NULL;
+	uint8_t salt[DATA_SALT_LEN];
+	uint8_t iv[DATA_IV_LEN];
+	uint8_t mac[DATA_MAC_LEN];
+
+	/* the root zio already encrypted the data */
+	if (zio->io_child_type == ZIO_CHILD_GANG)
+		return (ZIO_PIPELINE_CONTINUE);
+
+	/* only ZIL blocks are re-encrypted on rewrite */
+	if (!IO_IS_ALLOCATING(zio) &&
+	    BP_GET_TYPE(bp) != DMU_OT_INTENT_LOG)
+		return (ZIO_PIPELINE_CONTINUE);
+
+	/* if we are doing raw encryption set the provided encryption params */
+	if (zio->io_flags & ZIO_FLAG_RAW_ENCRYPT) {
+		ASSERT(zio->io_flags & ZIO_FLAG_RAW_COMPRESS);
+		ASSERT(zp->zp_encrypt);
+		BP_SET_ENCRYPTED(bp, B_TRUE);
+		zio_crypt_encode_params_bp(bp, zp->zp_salt, zp->zp_iv);
+		zio_crypt_encode_mac_bp(bp, zp->zp_mac);
+		return (ZIO_PIPELINE_CONTINUE);
+	}
+
+	if (!(zp->zp_encrypt || BP_IS_ENCRYPTED(bp))) {
+		BP_SET_ENCRYPTED(bp, B_FALSE);
+		return (ZIO_PIPELINE_CONTINUE);
+	}
+
+	ASSERT3U(psize, !=, 0);
+	ASSERT(spa_feature_is_active(spa, SPA_FEATURE_ENCRYPTION));
+	ASSERT(BP_GET_LEVEL(bp) == 0 || ot == DMU_OT_INTENT_LOG);
+
+	enc_buf = zio_buf_alloc(psize);
+
+	/*
+	 * For an explanation of what encryption parameters are stored
+	 * where, see the block comment in zio_crypt.c.
+	 */
+	if (ot == DMU_OT_INTENT_LOG) {
+		zio_crypt_decode_params_bp(bp, salt, iv);
+	} else {
+		BP_SET_ENCRYPTED(bp, B_TRUE);
+	}
+
+	/* Perform the encryption. This should not fail */
+	ret = spa_do_crypt_data(B_TRUE, spa, &zio->io_bookmark, bp,
+	    zio->io_txg, psize, zio->io_data, enc_buf, iv, mac, salt);
+	if (ret) {
+		/*
+		 * Dnode blocks and ZIL blocks may not need encryption if there
+		 * is no private data in the blocks. We cannot disable
+		 * encryption ZIL blocks since they have been preallocated, but
+		 * we can do so with dnode blocks. This means that we can use a
+		 * full checksum instead of leaving half blank for a MAC we
+		 * won't end up using.
+		 */
+		ASSERT3U(ret, ==, ZIO_NO_ENCRYPTION_NEEDED);
+		zio_buf_free(enc_buf, psize);
+
+		if (ot != DMU_OT_INTENT_LOG) {
+			ASSERT3U(ot, ==, DMU_OT_DNODE);
+			BP_SET_ENCRYPTED(bp, B_FALSE);
+		}
+		return (ZIO_PIPELINE_CONTINUE);
+	}
+
+	zio_push_transform(zio, enc_buf, psize, psize, NULL);
+
+	/* encode encryption metadata into the bp */
+	if (ot == DMU_OT_INTENT_LOG) {
+		zio_crypt_encode_mac_zil(enc_buf, mac);
+	} else {
+		zio_crypt_encode_params_bp(bp, salt, iv);
+		zio_crypt_encode_mac_bp(bp, mac);
+	}
+
+	return (ZIO_PIPELINE_CONTINUE);
+}
+
+/*
+ * ==========================================================================
  * Generate and verify checksums
  * ==========================================================================
  */
@@ -3524,9 +3741,7 @@ zio_done(zio_t *zio)
 {
 	zio_t *pio, *pio_next;
 	int c, w;
-#ifdef DEBUG
 	metaslab_class_t *mc = spa_normal_class(zio->io_spa);
-#endif
 	zio_link_t *zl = NULL;
 
 	/*
@@ -3858,7 +4073,8 @@ static zio_pipe_stage_t *zio_pipeline[] = {
 	zio_write_bp_init,
 	zio_free_bp_init,
 	zio_issue_async,
-	zio_write_bp_init,
+	zio_write_compress,
+	zio_encrypt,
 	zio_checksum_generate,
 	zio_nop_write,
 	zio_ddt_read_start,
