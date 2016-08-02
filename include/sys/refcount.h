@@ -20,6 +20,7 @@
  */
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2015 by Delphix. All rights reserved.
  */
 
 #ifndef	_SYS_REFCOUNT_H
@@ -61,6 +62,7 @@ typedef struct refcount {
 
 void refcount_create(refcount_t *rc);
 void refcount_create_untracked(refcount_t *rc);
+void refcount_create_tracked(refcount_t *rc);
 void refcount_destroy(refcount_t *rc);
 void refcount_destroy_many(refcount_t *rc, uint64_t number);
 int refcount_is_zero(refcount_t *rc);
@@ -82,6 +84,7 @@ typedef struct refcount {
 
 #define	refcount_create(rc) ((rc)->rc_count = 0)
 #define	refcount_create_untracked(rc) ((rc)->rc_count = 0)
+#define	refcount_create_tracked(rc) ((rc)->rc_count = 0)
 #define	refcount_destroy(rc) ((rc)->rc_count = 0)
 #define	refcount_destroy_many(rc, number) ((rc)->rc_count = 0)
 #define	refcount_is_zero(rc) ((rc)->rc_count == 0)
