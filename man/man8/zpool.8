@@ -144,7 +144,7 @@
 .Ar pool
 .Nm
 .Cm split
-.Op Fl n
+.Op Fl ln
 .Oo Fl o Ar property Ns = Ns Ar value Oc Ns ...
 .Op Fl R Ar root
 .Ar pool newpool
@@ -498,42 +498,6 @@ defaults to using
 though this may be overridden using an explicit setting.
 .El
 .Pp
-The following property can be set only at creation time:
-.Bl -tag -width Ds
-.It Sy ashift
-Pool sector size exponent, to the power of 2 (internally referred to
-as "ashift"). I/O operations will be aligned to the specified size
-boundaries. Additionally, the minimum (disk) write size will be set to
-the specified size, so this represents a space vs. performance
-trade-off. The typical case for setting this property is when
-performance is important and the underlying disks use 4KiB sectors but
-report 512B sectors to the OS (for compatibility reasons); in that
-case, set
-.Sy ashift=12
-(which is 1<<12 = 4096).
-.Pp
-For optimal performance, the pool sector size should be greater than
-or equal to the sector size of the underlying disks. Since the
-property cannot be changed after pool creation, if in a given pool,
-you
-.Sy ever
-want to use drives that
-.Sy report
-4KiB sectors, you must set
-.Sy ashift=12
-at pool creation time.
-.Pp
-Keep in mind is that the
-.Sy ashift
-is
-.Sy vdev
-specific and is not a
-.Sy pool
-global.  This means that when adding new vdevs to an existing pool you
-may need to specify the
-.Sy ashift.
-.El
-.Pp
 The following property can be set only at import time:
 .Bl -tag -width Ds
 .It Sy readonly Ns = Ns Sy on Ns | Ns Sy off
@@ -669,7 +633,7 @@ following subcommands are supported:
 .Bl -tag -width Ds
 .It Xo
 .Nm
-.Fl
+.Fl \?
 .Xc
 Displays a help message.
 .It Xo
@@ -1043,13 +1007,15 @@ can be recovered by using this option. If successful, the data from the
 discarded transactions is irretrievably lost. This option is ignored if the pool
 is importable or already imported.
 .It Fl l
-Indicates that the zpool command will request encryption keys for all
-encrypted datasets it attempts to mount as it is bringing the pool
-online. This is equivalent to running \fBzfs mount\fR on each
-encrypted dataset immediately after the pool is imported. If any
-datasets have a \fBprompt\fR keysource this command will block waiting
-for the key to be entered. Otherwise, encrypted datasets will be left
-unavailable until the keys are loaded.
+Indicates that this command will request encryption keys for all encrypted
+datasets it attempts to mount as it is bringing the pool online.
+Note that if any datasets have a
+.Sy keylocation
+of
+.Sy prompt
+this command will block waiting for the keys to be entered.
+Without this flag encrypted datasets will be left unavailable until the keys are
+loaded.
 .It Fl m
 Allows a pool to import when there is a missing log device. Recent transactions
 can be lost because the log device will be discarded.
@@ -1140,11 +1106,14 @@ is importable or already imported.
 .It Fl l
 Indicates that the zpool command will request encryption keys for all
 encrypted datasets it attempts to mount as it is bringing the pool
-online. This is equivalent to running \fBzfs mount\fR on each
-encrypted dataset immediately after the pool is imported. If any
-datasets have a \fBprompt\fR keysource this command will block waiting
-for the key to be entered. Otherwise, encrypted datasets will be left
-unavailable until the keys are loaded.
+online. This is equivalent to running
+.Nm Cm mount
+on each encrypted dataset immediately after the pool is imported.
+If any datasets have a
+.Sy prompt
+keysource this command will block waiting for the key to be entered.
+Otherwise, encrypted datasets will be left unavailable until the keys are
+loaded.
 .It Fl m
 Allows a pool to import when there is a missing log device. Recent transactions
 can be lost because the log device will be discarded.
@@ -1405,7 +1374,7 @@ values.
 .It Xo
 .Nm
 .Cm split
-.Op Fl n
+.Op Fl ln
 .Oo Fl o Ar property Ns = Ns Ar value Oc Ns ...
 .Op Fl R Ar root
 .Ar pool newpool
@@ -1421,6 +1390,16 @@ must be mirrors. At the time of the split,
 will be a replica of
 .Ar pool .
 .Bl -tag -width Ds
+.It Fl l
+Indicates that this command will request encryption keys for all encrypted
+datasets it attempts to mount as it is bringing the new pool online.
+Note that if any datasets have a
+.Sy keylocation
+of
+.Sy prompt
+this command will block waiting for the keys to be entered.
+Without this flag encrypted datasets will be left unavailable until the keys are
+loaded.
 .It Fl n
 Do dry run, do not actually perform the split. Print out the expected
 configuration of
@@ -1709,6 +1688,6 @@ data        23.9G  14.6G  9.30G    48%         -    61%  1.00x  ONLINE  -
 .Sh INTERFACE STABILITY
 .Sy Evolving
 .Sh SEE ALSO
-.Xr zfs 8 ,
+.Xr zfs 1M ,
 .Xr attributes 5 ,
 .Xr zpool-features 5

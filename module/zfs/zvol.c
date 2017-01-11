@@ -1653,8 +1653,6 @@ zvol_open(dev_t devp, int flag, int otyp, struct proc *p)
 }
 
 
-
-
 int
 zvol_close_impl(zvol_state_t *zv, int flag, int otyp, struct proc *p)
 {

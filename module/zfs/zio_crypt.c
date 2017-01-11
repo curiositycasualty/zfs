@@ -1,26 +1,20 @@
 /*
  * CDDL HEADER START
  *
- * The contents of this file are subject to the terms of the
- * Common Development and Distribution License, Version 1.0 only
- * (the "License").  You may not use this file except in compliance
- * with the License.
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
  *
- * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
- * See the License for the specific language governing permissions
- * and limitations under the License.
- *
- * When distributing Covered Code, include this CDDL HEADER in each
- * file and include the License file at usr/src/OPENSOLARIS.LICENSE.
- * If applicable, add the following below this CDDL HEADER, with the
- * fields enclosed by brackets "[]" replaced with your own identifying
- * information: Portions Copyright [yyyy] [name of copyright owner]
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * http://www.illumos.org/license/CDDL.
  *
  * CDDL HEADER END
  */
+
 /*
- * Copyright (c) 2016, Datto, Inc. All rights reserved.
+ * Copyright (c) 2017, Datto, Inc. All rights reserved.
  */
 
 #include <sys/zio_crypt.h>
@@ -38,7 +32,8 @@
  * Encryption Algorithm (crypt):
  * The encryption algorithm and mode we are going to use. We currently support
  * AES-GCM and AES-CCM in 128, 192, and 256 bits. All encryption parameters are
- * stored in little endian format (regardless of the host machine's byteorder).
+ * stored in little endian format (regardless of the host machine's byteorder)
+ * on-disk and in memory.
  *
  * Plaintext:
  * The unencrypted data that we want to encrypt
@@ -284,12 +279,12 @@ hkdf_sha256(uint8_t *key_material, uint_t km_len, uint8_t *salt,
 
 	ret = hkdf_sha256_extract(salt, salt_len, key_material, km_len,
 	    extract_key);
-	if (ret)
+	if (ret != 0)
 		goto error;
 
 	ret = hkdf_sha256_expand(extract_key, info, info_len, output_key,
 	    out_len);
-	if (ret)
+	if (ret != 0)
 		goto error;
 
 	return (0);
@@ -325,21 +320,21 @@ zio_crypt_key_init(uint64_t crypt, zio_crypt_key_t *key)
 
 	/* fill keydata buffers and salt with random data */
 	ret = random_get_bytes(key->zk_master_keydata, keydata_len);
-	if (ret)
+	if (ret != 0)
 		goto error;
 
 	ret = random_get_bytes(key->zk_hmac_keydata, HMAC_SHA256_KEYLEN);
-	if (ret)
+	if (ret != 0)
 		goto error;
 
 	ret = random_get_bytes(key->zk_salt, DATA_SALT_LEN);
-	if (ret)
+	if (ret != 0)
 		goto error;
 
 	/* derive the current key from the master key */
 	ret = hkdf_sha256(key->zk_master_keydata, keydata_len, NULL, 0,
 	    key->zk_salt, DATA_SALT_LEN, key->zk_current_keydata, keydata_len);
-	if (ret)
+	if (ret != 0)
 		goto error;
 
 	/* initialize keys for the ICP */
@@ -388,7 +383,7 @@ zio_crypt_key_change_salt(zio_crypt_key_t *key)
 
 	/* generate a new salt */
 	ret = random_get_bytes(salt, DATA_SALT_LEN);
-	if (ret)
+	if (ret != 0)
 		goto error;
 
 	rw_enter(&key->zk_salt_lock, RW_WRITER);
@@ -396,7 +391,7 @@ zio_crypt_key_change_salt(zio_crypt_key_t *key)
 	/* derive the current key from the master key and the new salt */
 	ret = hkdf_sha256(key->zk_master_keydata, keydata_len, NULL, 0,
 	    salt, DATA_SALT_LEN, key->zk_current_keydata, keydata_len);
-	if (ret)
+	if (ret != 0)
 		goto error_unlock;
 
 	/* assign the salt and reset the usage count */
@@ -437,7 +432,7 @@ zio_crypt_key_get_salt(zio_crypt_key_t *key, uint8_t *salt)
 
 	if (salt_change) {
 		ret = zio_crypt_key_change_salt(key);
-		if (ret)
+		if (ret != 0)
 			goto error;
 	}
 
@@ -566,7 +561,7 @@ zio_crypt_key_wrap(crypto_key_t *cwkey, zio_crypt_key_t *key, uint8_t *iv,
 
 	/* generate iv for wrapping the master and hmac key */
 	ret = random_get_pseudo_bytes(iv, WRAPPING_IV_LEN);
-	if (ret)
+	if (ret != 0)
 		goto error;
 
 	puio = uio_create(2, 0, UIO_SYSSPACE, UIO_READ);
@@ -597,7 +592,7 @@ zio_crypt_key_wrap(crypto_key_t *cwkey, zio_crypt_key_t *key, uint8_t *iv,
 	/* encrypt the keys and store the resulting ciphertext and mac */
 	ret = zio_do_crypt_uio(B_TRUE, crypt, cwkey, NULL, iv, enc_len,
 	    puio, cuio);
-	if (ret)
+	if (ret != 0)
 		goto error;
 
 	if (puio) uio_free(puio);
@@ -657,18 +652,18 @@ zio_crypt_key_unwrap(crypto_key_t *cwkey, uint64_t crypt, uint8_t *keydata,
 	/* decrypt the keys and store the result in the output buffers */
 	ret = zio_do_crypt_uio(B_FALSE, crypt, cwkey, NULL, iv, enc_len,
 	    puio, cuio);
-	if (ret)
+	if (ret != 0)
 		goto error;
 
 	/* generate a fresh salt */
 	ret = random_get_bytes(key->zk_salt, DATA_SALT_LEN);
-	if (ret)
+	if (ret != 0)
 		goto error;
 
 	/* derive the current key from the master key */
 	ret = hkdf_sha256(key->zk_master_keydata, keydata_len, NULL, 0,
 	    key->zk_salt, DATA_SALT_LEN, key->zk_current_keydata, keydata_len);
-	if (ret)
+	if (ret != 0)
 		goto error;
 
 	/* initialize keys for ICP */
@@ -719,7 +714,7 @@ zio_crypt_generate_iv(uint8_t *ivbuf)
 
 	/* randomly generate the IV */
 	ret = random_get_pseudo_bytes(ivbuf, DATA_IV_LEN);
-	if (ret)
+	if (ret != 0)
 		goto error;
 
 	return (0);
@@ -859,27 +854,8 @@ zio_crypt_copy_dnode_bonus(uint8_t *src, uint8_t *dst, uint_t datalen)
  	}
 }
 
-/*
- * ZIL blocks are rewritten as new log entries are synced to
- * disk. We generated the IV randomly when we allocated the
- * block, but we cannot reuse this each time we do a rewrite.
- * To combat this we add in zc_nused from the zil_chain_t. We
- * only need the IV to be unique for each, not securely random
- * so it is ok for us to just add it into the existing value.
- */
-void
-zio_crypt_derive_zil_iv(const void *data, uint8_t *iv, uint8_t *iv_out)
-{
- 	uint64_t *iv_word;
- 	zil_chain_t *zc = (zil_chain_t *)data;
-
- 	bcopy(iv, iv_out, DATA_IV_LEN);
- 	iv_word = (uint64_t *)iv_out;
- 	*iv_word = LE_64(LE_64(*iv_word) + zc->zc_nused);
-}
-
-
-static void zio_crypt_destroy_uio(uio_t *uio)
+static void
+zio_crypt_destroy_uio(uio_t *uio)
 {
 #ifdef _KERNEL
 	if (uio) uio_free(uio);
@@ -1196,7 +1172,7 @@ zio_crypt_init_uios(boolean_t encrypt, dmu_object_type_t ot, uint8_t *plainbuf,
 	}
 
 	/* return the error or ZIO_NO_ENCRYPTION_NEEDED to the caller */
-	if (ret)
+	if (ret != 0)
 		goto error;
 
 	/* populate the uios */
@@ -1243,9 +1219,9 @@ zio_do_crypt_data(boolean_t encrypt, zio_crypt_key_t *key, uint8_t *salt,
 	ret = zio_crypt_init_uios(encrypt, ot, plainbuf, cipherbuf, datalen,
 		mac, out_mac, &puio, &cuio, &enc_len);
 
- 	/* return the error or ZIO_NO_ENCRYPTION_NEEDED to the caller */
- 	if (ret)
-  		return (ret);
+	/* return the error or ZIO_NO_ENCRYPTION_NEEDED to the caller */
+	if (ret != 0)
+		return (ret);
 
 	/*
 	 * If the needed key is the current one, just use it. Otherwise we
@@ -1265,7 +1241,7 @@ zio_do_crypt_data(boolean_t encrypt, zio_crypt_key_t *key, uint8_t *salt,
 
 		ret = hkdf_sha256(key->zk_master_keydata, keydata_len, NULL, 0,
 		    salt, DATA_SALT_LEN, enc_keydata, keydata_len);
-		if (ret)
+		if (ret != 0)
 			goto error;
 
 		tmp_ckey.ck_format = CRYPTO_KEY_RAW;
@@ -1280,7 +1256,7 @@ zio_do_crypt_data(boolean_t encrypt, zio_crypt_key_t *key, uint8_t *salt,
 	ret = zio_do_crypt_uio(encrypt, key->zk_crypt, ckey, tmpl, iv, enc_len,
 	    puio, cuio);
 
-	if (ret)
+	if (ret != 0)
 		goto error;
 
 	if (locked) {

@@ -1240,7 +1240,7 @@ zfsvfs_create(const char *osname, zfsvfs_t **zfvp)
 
 	error = zfsvfs_init(zfsvfs, os);
 	if (error != 0) {
-		dmu_objset_disown(os, zfsvfs);
+		dmu_objset_disown(os, B_TRUE, zfsvfs);
 		*zfvp = NULL;
 		kmem_free(zfsvfs, sizeof (zfsvfs_t));
 		return (error);
@@ -1588,7 +1588,7 @@ dprintf("%s\n", __func__);
 #endif
 out:
 	if (error) {
-		dmu_objset_disown(zfsvfs->z_os, zfsvfs);
+		dmu_objset_disown(zfsvfs->z_os, B_TRUE, zfsvfs);
 		zfsvfs_free(zfsvfs);
 	} else {
 		atomic_inc_32(&zfs_active_fs_count);
@@ -3234,7 +3234,7 @@ dprintf("%s\n", __func__);
 		 * Finally release the objset
 		 */
         dprintf("disown\n");
-		dmu_objset_disown(os, zfsvfs);
+		dmu_objset_disown(os, B_TRUE, zfsvfs);
 	}
 
     dprintf("OS released\n");
@@ -3368,9 +3368,9 @@ zfs_vget_internal(zfsvfs_t *zfsvfs, ino64_t ino, vnode_t **vpp)
 			zp->z_finder_parentid = findnode->hl_parent;
 			mutex_exit(&zp->z_lock);
 
+
 		// If we already have the name, cached in zfs_vnop_lookup
 		} else if (zp->z_name_cache[0]) {
-
 			dprintf("vget: cached name '%s'\n", zp->z_name_cache);
 			vnode_update_identity(*vpp, NULL, zp->z_name_cache,
 								  strlen(zp->z_name_cache), 0,
