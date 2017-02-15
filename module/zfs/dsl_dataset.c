@@ -406,8 +406,8 @@ dsl_dataset_try_add_ref(dsl_pool_t *dp, dsl_dataset_t *ds, void *tag)
 }
 
 int
-dsl_dataset_hold_obj_flags(dsl_pool_t *dp, uint64_t dsobj, int flags, void *tag,
-    dsl_dataset_t **dsp)
+dsl_dataset_hold_obj_flags(dsl_pool_t *dp, uint64_t dsobj,
+    ds_hold_flags_t flags, void *tag, dsl_dataset_t **dsp)
 {
 	objset_t *mos = dp->dp_meta_objset;
 	dmu_buf_t *dbuf;
@@ -575,7 +575,7 @@ dsl_dataset_hold_obj(dsl_pool_t *dp, uint64_t dsobj, void *tag,
 }
 
 int
-dsl_dataset_hold_flags(dsl_pool_t *dp, const char *name, int flags,
+dsl_dataset_hold_flags(dsl_pool_t *dp, const char *name, ds_hold_flags_t flags,
     void *tag, dsl_dataset_t **dsp)
 {
 	dsl_dir_t *dd;
@@ -636,8 +636,8 @@ dsl_dataset_hold(dsl_pool_t *dp, const char *name, void *tag,
 }
 
 int
-dsl_dataset_own_obj(dsl_pool_t *dp, uint64_t dsobj, int flags, void *tag,
-    dsl_dataset_t **dsp)
+dsl_dataset_own_obj(dsl_pool_t *dp, uint64_t dsobj, ds_hold_flags_t flags,
+    void *tag, dsl_dataset_t **dsp)
 {
 	int err = dsl_dataset_hold_obj_flags(dp, dsobj, flags, tag, dsp);
 	if (err != 0)
@@ -651,8 +651,8 @@ dsl_dataset_own_obj(dsl_pool_t *dp, uint64_t dsobj, int flags, void *tag,
 }
 
 int
-dsl_dataset_own(dsl_pool_t *dp, const char *name, int flags, void *tag,
-    dsl_dataset_t **dsp)
+dsl_dataset_own(dsl_pool_t *dp, const char *name, ds_hold_flags_t flags,
+    void *tag, dsl_dataset_t **dsp)
 {
 	int err = dsl_dataset_hold_flags(dp, name, flags, tag, dsp);
 	if (err != 0)
@@ -734,7 +734,7 @@ dsl_dataset_namelen(dsl_dataset_t *ds)
 }
 
 void
-dsl_dataset_rele_flags(dsl_dataset_t *ds, int flags, void *tag)
+dsl_dataset_rele_flags(dsl_dataset_t *ds, ds_hold_flags_t flags, void *tag)
 {
 	if (ds->ds_dir != NULL && ds->ds_dir->dd_crypto_obj != 0 &&
 	    (flags & DS_HOLD_FLAG_DECRYPT)) {
@@ -752,7 +752,7 @@ dsl_dataset_rele(dsl_dataset_t *ds, void *tag)
 }
 
 void
-dsl_dataset_disown(dsl_dataset_t *ds, int flags, void *tag)
+dsl_dataset_disown(dsl_dataset_t *ds, ds_hold_flags_t flags, void *tag)
 {
 	ASSERT3P(ds->ds_owner, ==, tag);
 	ASSERT(ds->ds_dbuf != NULL);

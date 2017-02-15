@@ -304,6 +304,14 @@ zil_read_log_data(zilog_t *zilog, const lr_write_t *lr, void *wbuf)
 	if (zilog->zl_header->zh_claim_txg == 0)
 		zio_flags |= ZIO_FLAG_SPECULATIVE | ZIO_FLAG_SCRUB;
 
+	/*
+	 * If we are not using the resulting data, we are just checking that
+	 * it hasn't been corrupted so we don't need to waste CPU time
+	 * decompressing and decrypting it.
+	 */
+	if (wbuf == NULL)
+		zio_flags |= ZIO_FLAG_RAW;
+
 	SET_BOOKMARK(&zb, dmu_objset_id(zilog->zl_os), lr->lr_foid,
 	    ZB_ZIL_LEVEL, lr->lr_offset / BP_GET_LSIZE(bp));
 

@@ -1066,8 +1066,12 @@ dbuf_read_impl(dmu_buf_impl_t *db, zio_t *zio, uint32_t flags)
 
 	zio_flags = (flags & DB_RF_CANFAIL) ?
 	    ZIO_FLAG_CANFAIL : ZIO_FLAG_MUSTSUCCEED;
-	if ((flags & DB_RF_NO_DECRYPT) && BP_IS_ENCRYPTED(db->db_blkptr))
+
+	if ((flags & DB_RF_NO_DECRYPT) && BP_IS_ENCRYPTED(db->db_blkptr)) {
+		ASSERT3U(BP_GET_TYPE(db->db_blkptr), ==, DMU_OT_DNODE);
+		ASSERT3U(BP_GET_LEVEL(db->db_blkptr), ==, 0);
 		zio_flags |= ZIO_FLAG_RAW;
+	}
 
 	err = arc_read(zio, db->db_objset->os_spa, db->db_blkptr,
 	    dbuf_read_done, db, ZIO_PRIORITY_SYNC_READ, zio_flags,
