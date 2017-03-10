@@ -1687,6 +1687,17 @@ arc_buf_thaw(arc_buf_t *buf)
 
 	ASSERT(HDR_HAS_L1HDR(hdr));
 	arc_cksum_free(hdr);
+
+	mutex_enter(&hdr->b_l1hdr.b_freeze_lock);
+#ifdef ZFS_DEBUG
+	if (zfs_flags & ZFS_DEBUG_MODIFY) {
+		if (hdr->b_l1hdr.b_thawed != NULL)
+			kmem_free(hdr->b_l1hdr.b_thawed, 1);
+		hdr->b_l1hdr.b_thawed = kmem_alloc(1, KM_SLEEP);
+	}
+#endif
+	mutex_exit(&hdr->b_l1hdr.b_freeze_lock);
+
 	arc_buf_unwatch(buf);
 }
 
@@ -1836,6 +1847,9 @@ arc_hdr_decrypt(arc_buf_hdr_t *hdr, kmutex_t *hash_lock, spa_t *spa)
 	dsl_crypto_key_t *dck = NULL;
 	void *cbuf = NULL;
 
+	ASSERT(HDR_HAS_RDATA(hdr));
+	ASSERT3P(hdr->b_l1hdr.b_pdata, ==, NULL);
+
 	if (hash_lock != NULL)
 		mutex_enter(hash_lock);
 
@@ -1845,7 +1859,7 @@ arc_hdr_decrypt(arc_buf_hdr_t *hdr, kmutex_t *hash_lock, spa_t *spa)
 	 * again now under the hash_lock to make sure nothing has changed.
 	 * If this isn't true there is no work to do so we can simply return.
 	 */
-	if (!HDR_HAS_RADAT(hdr) || hdr->b_l1hdr.b_pdata != NULL)
+	if (!HDR_HAS_RDATA(hdr) || hdr->b_l1hdr.b_pdata != NULL)
 		goto out_unlock;
 
 	arc_hdr_alloc_data(hdr, B_FALSE);
@@ -1859,7 +1873,8 @@ arc_hdr_decrypt(arc_buf_hdr_t *hdr, kmutex_t *hash_lock, spa_t *spa)
 	 * that has been unmounted or otherwise disowned, meaning the key
 	 * won't be accessible via that dsobj anymore.
 	 */
-	ret = spa_keystore_lookup_key(spa, dsobj, FTAG, &dck);
+	ret = spa_keystore_lookup_key(spa, hdr->b_crypt_hdr.b_dsobj,
+	    FTAG, &dck);
 	if (ret != 0)
 		goto error;
 
@@ -1887,8 +1902,7 @@ arc_hdr_decrypt(arc_buf_hdr_t *hdr, kmutex_t *hash_lock, spa_t *spa)
 		ret = zio_decompress_data(HDR_GET_COMPRESS(hdr),
 		    hdr->b_l1hdr.b_pdata, cbuf, HDR_GET_PSIZE(hdr),
 		    HDR_GET_LSIZE(hdr));
-		if (ret != 0) {
-			abd_return_buf(cabd, tmp, arc_hdr_size(hdr));
+		if (ret != 0)
 			goto error;
 
 		arc_free_data_buf(hdr, hdr->b_l1hdr.b_pdata,
@@ -1938,7 +1952,7 @@ arc_buf_untransform_in_place(arc_buf_t *buf, kmutex_t *hash_lock)
 	if (!ARC_BUF_ENCRYPTED(buf))
 		goto out_unlock;
 
-	zio_crypt_copy_dnode_bonus(hdr->b_l1hdr.b_pabd, buf->b_data,
+	zio_crypt_copy_dnode_bonus(hdr->b_l1hdr.b_pdata, buf->b_data,
 	    arc_buf_size(buf));
 	buf->b_flags &= ~ARC_BUF_FLAG_ENCRYPTED;
 	buf->b_flags &= ~ARC_BUF_FLAG_COMPRESSED;
@@ -2570,7 +2584,8 @@ arc_can_share(arc_buf_hdr_t *hdr, arc_buf_t *buf)
 	 * sharing if the new buf isn't the first to be added.
 	 */
 	ASSERT3P(buf->b_hdr, ==, hdr);
-	boolean_t hdr_compressed = HDR_GET_COMPRESS(hdr) != ZIO_COMPRESS_OFF;
+	boolean_t hdr_compressed = arc_hdr_get_compress(hdr) !=
+	    ZIO_COMPRESS_OFF;
 	boolean_t buf_compressed = ARC_BUF_COMPRESSED(buf) != 0;
  	return (!ARC_BUF_ENCRYPTED(buf) &&
  	    buf_compressed == hdr_compressed &&
@@ -2978,7 +2993,7 @@ arc_buf_destroy_impl(arc_buf_t *buf)
 		 */
 		ASSERT3P(lastbuf, !=, NULL);
 		ASSERT(arc_buf_is_shared(lastbuf) ||
-		    HDR_GET_COMPRESS(hdr) != ZIO_COMPRESS_OFF);
+		    arc_hdr_get_compress(hdr) != ZIO_COMPRESS_OFF);
 	}
 
 	if (HDR_ENCRYPTED(hdr))
@@ -3172,6 +3187,12 @@ arc_hdr_realloc(arc_buf_hdr_t *hdr, kmem_cache_t *old, kmem_cache_t *new)
 		VERIFY3P(hdr->b_l1hdr.b_pdata, ==, NULL);
 		ASSERT(!HDR_HAS_RDATA(hdr));
 
+#ifdef ZFS_DEBUG
+		if (hdr->b_l1hdr.b_thawed != NULL) {
+			kmem_free(hdr->b_l1hdr.b_thawed, 1);
+			hdr->b_l1hdr.b_thawed = NULL;
+		}
+#endif
 
 		arc_hdr_clear_flags(nhdr, ARC_FLAG_HAS_L1HDR);
 	}
@@ -3253,6 +3274,12 @@ arc_hdr_realloc_crypt(arc_buf_hdr_t *hdr, boolean_t encrypt)
 	nhdr->b_l1hdr.b_acb = hdr->b_l1hdr.b_acb;
 	nhdr->b_l1hdr.b_pdata = hdr->b_l1hdr.b_pdata;
 	nhdr->b_l1hdr.b_buf = hdr->b_l1hdr.b_buf;
+#ifdef ZFS_DEBUG
+	if (hdr->b_l1hdr.b_thawed != NULL) {
+		nhdr->b_l1hdr.b_thawed = hdr->b_l1hdr.b_thawed;
+		hdr->b_l1hdr.b_thawed = NULL;
+	}
+#endif
 
 	/*
 	 * This refcount_add() exists only to ensure that the individual
@@ -3392,6 +3419,12 @@ arc_hdr_destroy(arc_buf_hdr_t *hdr)
 		while (hdr->b_l1hdr.b_buf != NULL)
 			arc_buf_destroy_impl(hdr->b_l1hdr.b_buf);
 
+#ifdef ZFS_DEBUG
+		if (hdr->b_l1hdr.b_thawed != NULL) {
+			kmem_free(hdr->b_l1hdr.b_thawed, 1);
+			hdr->b_l1hdr.b_thawed = NULL;
+		}
+#endif
 
 		if (hdr->b_l1hdr.b_pdata != NULL) {
 			arc_hdr_free_data(hdr, B_FALSE);
@@ -3486,9 +3519,8 @@ arc_evict_hdr(arc_buf_hdr_t *hdr, kmutex_t *hash_lock)
 
 		DTRACE_PROBE1(arc__delete, arc_buf_hdr_t *, hdr);
 
-		ASSERT3P(hdr->b_l1hdr.b_pdata, ==, NULL);
 		if (HDR_HAS_L2HDR(hdr)) {
-			ASSERT(hdr->b_l1hdr.b_pdata == NULL);
+			ASSERT3P(hdr->b_l1hdr.b_pdata, ==, NULL);
 			ASSERT(!HDR_HAS_RDATA(hdr));
 			/*
 			 * This buffer is cached on the 2nd Level ARC;
@@ -5059,8 +5091,6 @@ arc_read_done(zio_t *zio)
 		if (BP_GET_TYPE(bp) == DMU_OT_INTENT_LOG) {
 			zio_crypt_decode_mac_zil(zio->io_data,
 			    hdr->b_crypt_hdr.b_mac);
-			zio_crypt_derive_zil_iv(zio->io_data, tmpiv,
-			    hdr->b_crypt_hdr.b_iv);
 		} else {
 			zio_crypt_decode_mac_bp(bp, hdr->b_crypt_hdr.b_mac);
 		}
@@ -5778,7 +5808,7 @@ arc_release(arc_buf_t *buf, void *tag)
 			 * if we have a compressed, shared buffer.
 			 */
 			ASSERT(arc_buf_is_shared(lastbuf) ||
-			    HDR_GET_COMPRESS(hdr) != ZIO_COMPRESS_OFF);
+			    arc_hdr_get_compress(hdr) != ZIO_COMPRESS_OFF);
 			ASSERT(!ARC_BUF_SHARED(buf));
 		}
 		ASSERT(hdr->b_l1hdr.b_pdata != NULL || HDR_HAS_RDATA(hdr));
@@ -5982,13 +6012,7 @@ arc_write_ready(zio_t *zio)
 		ASSERT3U(zio->io_orig_size, ==, arc_buf_size(buf));
 		ASSERT3U(hdr->b_l1hdr.b_bufcnt, ==, 1);
 
-		/*
-		 * This hdr is not compressed so we're able to share
-		 * the arc_buf_t data buffer with the hdr.
-		 */
 		arc_share_buf(hdr, buf);
-		ASSERT0(bcmp(zio->io_orig_data, hdr->b_l1hdr.b_pdata,
-		    HDR_GET_LSIZE(hdr)));
 	}
 	arc_hdr_verify(hdr, zio->io_bp);
 }
@@ -6124,7 +6148,7 @@ arc_write(zio_t *pio, spa_t *spa, uint64_t txg,
 	} else if (ARC_BUF_COMPRESSED(buf)) {
 		ASSERT3U(zp->zp_compress, !=, ZIO_COMPRESS_OFF);
 		ASSERT3U(HDR_GET_LSIZE(hdr), !=, arc_buf_size(buf));
-		zio_flags |= ZIO_FLAG_RAW;
+		zio_flags |= ZIO_FLAG_RAW_COMPRESS;
 	}
 	callback = kmem_zalloc(sizeof (arc_write_callback_t), KM_SLEEP);
 	callback->awcb_ready = ready;

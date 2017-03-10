@@ -605,6 +605,7 @@ dsl_scan_prefetch(dsl_scan_t *scn, arc_buf_t *buf, blkptr_t *bp,
 {
 	zbookmark_phys_t czb;
 	arc_flags_t flags = ARC_FLAG_NOWAIT | ARC_FLAG_PREFETCH;
+	int zio_flags = ZIO_FLAG_CANFAIL | ZIO_FLAG_SCAN_THREAD;
 
 	if (zfs_no_scrub_prefetch)
 		return;
@@ -623,7 +624,7 @@ dsl_scan_prefetch(dsl_scan_t *scn, arc_buf_t *buf, blkptr_t *bp,
 
 	(void) arc_read(scn->scn_zio_root, scn->scn_dp->dp_spa, bp,
 	    NULL, NULL, ZIO_PRIORITY_ASYNC_READ,
-	    ZIO_FLAG_CANFAIL | ZIO_FLAG_SCAN_THREAD, &flags, &czb);
+	    zio_flags, &flags, &czb);
 }
 
 static boolean_t

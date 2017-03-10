@@ -389,7 +389,7 @@ zio_decrypt(zio_t *zio, void *data, uint64_t size)
 	    bp->blk_birth, size, data, zio->io_data, iv, mac, salt);
 	if (ret == ZIO_NO_ENCRYPTION_NEEDED) {
 		ASSERT3U(BP_GET_TYPE(bp), ==, DMU_OT_INTENT_LOG);
-		abd_copy(data, zio->io_abd, size);
+		bcopy(zio->io_data, data, size);
 	} else if (ret != 0) {
 		/* assert that the key was found unless this was speculative */
 		ASSERT(ret != ENOENT || (zio->io_flags & ZIO_FLAG_SPECULATIVE));
@@ -3418,7 +3418,6 @@ zio_encrypt(zio_t *zio)
 	uint64_t psize = BP_GET_PSIZE(bp);
 	dmu_object_type_t ot = BP_GET_TYPE(bp);
 	void *enc_buf = NULL;
-	abd_t *eabd = NULL;
 	uint8_t salt[ZIO_DATA_SALT_LEN];
 	uint8_t iv[ZIO_DATA_IV_LEN];
 	uint8_t mac[ZIO_DATA_MAC_LEN];
@@ -3757,7 +3756,7 @@ zio_done(zio_t *zio)
 {
 	zio_t *pio, *pio_next;
 	int c, w;
-	metaslab_class_t *mc = spa_normal_class(zio->io_spa);
+	ASSERTV(metaslab_class_t *mc = spa_normal_class(zio->io_spa));
 	zio_link_t *zl = NULL;
 
 	/*

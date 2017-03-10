@@ -1389,15 +1389,6 @@ dmu_recv_begin_check(void *arg, dmu_tx_t *tx)
 	    !spa_feature_is_enabled(dp->dp_spa, SPA_FEATURE_LARGE_BLOCKS))
 		return (SET_ERROR(ENOTSUP));
 
-	/*
-	 * The receiving code doesn't know how to translate large dnodes
-	 * to smaller ones, so the pool must have the LARGE_DNODE
-	 * feature enabled if the stream has LARGE_DNODE.
-	 */
-	if ((featureflags & DMU_BACKUP_FEATURE_LARGE_DNODE) &&
-	    !spa_feature_is_enabled(dp->dp_spa, SPA_FEATURE_LARGE_DNODE))
-		return (SET_ERROR(ENOTSUP));
-
 	error = dsl_dataset_hold_flags(dp, tofs, dsflags, FTAG, &ds);
 	if (error == 0) {
 		/* target fs already exists; recv into temp clone */

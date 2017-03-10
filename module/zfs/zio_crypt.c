@@ -911,7 +911,7 @@ zio_crypt_init_uios_zil(boolean_t encrypt, uint8_t *plainbuf,
 	boolean_t byteswap;
 	uint64_t txtype;
 	uint_t nr_src, nr_dst, lr_len, crypt_len, nr_iovecs = 0, total_len = 0;
-			uint8_t *src, *dst, *slrp, *dlrp, *end, *blkend;
+	uint8_t *src, *dst, *slrp, *dlrp, *blkend;
 	zil_chain_t *zilc;
 	lr_t *lr;
 	uio_t *srcuio = NULL, *dstuio = NULL;
@@ -1274,7 +1274,7 @@ zio_do_crypt_data(boolean_t encrypt, zio_crypt_key_t *key, uint8_t *salt,
 	 * how many iovecs we want (as max).
 	 */
 	uio_t *puio = NULL, *cuio = NULL;
-	uint8_t out_mac[DATA_MAC_LEN];
+	uint8_t out_mac[ZIO_DATA_MAC_LEN];
 	uint8_t enc_keydata[MAX_MASTER_KEY_LEN];
 	crypto_key_t tmp_ckey, *ckey = NULL;
 	crypto_ctx_template_t tmpl;

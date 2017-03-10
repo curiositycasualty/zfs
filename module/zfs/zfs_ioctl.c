@@ -5738,9 +5738,6 @@ zfs_ioctl_init(void)
 	    POOL_NAME,
 	    POOL_CHECK_SUSPENDED | POOL_CHECK_READONLY, B_TRUE, B_TRUE);
 
-	zfs_ioctl_register("receive", ZFS_IOC_RECV_NEW,
-	    zfs_ioc_recv_new, zfs_secpolicy_recv_new, DATASET_NAME,
-	    POOL_CHECK_SUSPENDED | POOL_CHECK_READONLY, B_TRUE, B_TRUE);
 	zfs_ioctl_register("load-key", ZFS_IOC_LOAD_KEY,
 	    zfs_ioc_load_key, zfs_secpolicy_load_key,
 	    DATASET_NAME, POOL_CHECK_SUSPENDED, B_TRUE, B_TRUE);

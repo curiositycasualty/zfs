@@ -594,9 +594,6 @@ dmu_objset_own(const char *name, dmu_objset_type_t type,
 
 	dsl_pool_rele(dp, FTAG);
 
-	if (dmu_objset_userobjspace_upgradable(*osp))
-		dmu_objset_userobjspace_upgrade(*osp);
-
 	return (0);
 }
 
@@ -646,7 +643,6 @@ dmu_objset_refresh_ownership(objset_t *os, boolean_t key_needed, void *tag)
 	dsl_pool_t *dp;
 	dsl_dataset_t *ds, *newds;
 	char name[ZFS_MAX_DATASET_NAME_LEN];
-	boolean_t key_needed;
 
 	ds = os->os_dsl_dataset;
 	VERIFY3P(ds, !=, NULL);
@@ -669,7 +665,6 @@ dmu_objset_disown(objset_t *os, boolean_t key_needed, void *tag)
 	/*
 	 * Stop upgrading thread
 	 */
-	dmu_objset_upgrade_stop(os);
 	dsl_dataset_disown(os->os_dsl_dataset,
 	    (key_needed) ? DS_HOLD_FLAG_DECRYPT : 0, tag);
 }

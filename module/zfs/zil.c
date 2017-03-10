@@ -327,40 +327,6 @@ zil_read_log_data(zilog_t *zilog, const lr_write_t *lr, void *wbuf)
 	return (error);
 }
 
-
-/*
- * Similar to zil_read_log_data(), but does not attempt to decrypt data now.
- * The data will be decrypted during replay, when the key is loaded.
- */
-static int
-zil_check_log_data(zilog_t *zilog, const lr_write_t *lr)
-{
-	enum zio_flag zio_flags = ZIO_FLAG_CANFAIL | ZIO_FLAG_RAW;
-	const blkptr_t *bp = &lr->lr_blkptr;
-	zbookmark_phys_t zb;
-	void *data = NULL;
-	int error;
-
-	if (BP_IS_HOLE(bp))
-		return (0);
-
-	if (zilog->zl_header->zh_claim_txg == 0)
-		zio_flags |= ZIO_FLAG_SPECULATIVE | ZIO_FLAG_SCRUB;
-
-	SET_BOOKMARK(&zb, dmu_objset_id(zilog->zl_os), lr->lr_foid,
-	    ZB_ZIL_LEVEL, lr->lr_offset / BP_GET_LSIZE(bp));
-
-	data = zio_data_buf_alloc(BP_GET_PSIZE(bp));
-
-	error = zio_wait(zio_read(NULL, zilog->zl_spa,
-	    bp, data, BP_GET_PSIZE(bp), NULL, NULL,
-	    ZIO_PRIORITY_SYNC_READ, zio_flags, &zb));
-
-	zio_data_buf_free(data, BP_GET_PSIZE(bp));
-
-	return (error);
-}
-
 /*
  * Parse the intent log, and call parse_func for each valid record within.
  */

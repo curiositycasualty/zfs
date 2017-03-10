@@ -1851,7 +1851,6 @@ spa_do_crypt_data(boolean_t encrypt, spa_t *spa, zbookmark_phys_t *zb,
 	int ret;
 	dmu_object_type_t ot = BP_GET_TYPE(bp);
 	dsl_crypto_key_t *dck = NULL;
-	uint8_t *plainbuf = NULL, *cipherbuf = NULL;
 
 	ASSERT(spa_feature_is_active(spa, SPA_FEATURE_ENCRYPTION));
 	ASSERT(!BP_IS_EMBEDDED(bp));
